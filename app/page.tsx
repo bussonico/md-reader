@@ -12,33 +12,30 @@ export default function LibraryPage() {
   const { books, importBook, deleteBook } = useBooks()
   const [initialized, setInitialized] = useState(false)
 
-  // First-run: import sample books
+  // Seed sample books (checks by title so it's safe to run multiple times)
   useEffect(() => {
     const init = async () => {
-      const count = await db.books.count()
-      if (count === 0) {
-        try {
-          const [s1, s2] = await Promise.all([
-            fetch('/samples/sample1.md').then((r) => r.text()),
-            fetch('/samples/sample2.md').then((r) => r.text()),
-          ])
-          await db.books.bulkAdd([
-            {
-              title: extractTitle(s1),
-              content: s1,
-              importedAt: new Date(Date.now() - 1000),
-              coverColor: generateCoverColor(extractTitle(s1)),
-            },
-            {
-              title: extractTitle(s2),
-              content: s2,
-              importedAt: new Date(),
-              coverColor: generateCoverColor(extractTitle(s2)),
-            },
-          ])
-        } catch (e) {
-          console.warn('Could not load sample books', e)
+      const SAMPLES = [
+        { file: '/samples/sample1.md', offset: 2000 },
+        { file: '/samples/sample2.md', offset: 1000 },
+        { file: '/samples/grinberg.md', offset: 0 },
+      ]
+      try {
+        for (const { file, offset } of SAMPLES) {
+          const content = await fetch(file).then((r) => r.text())
+          const title = extractTitle(content)
+          const exists = await db.books.where('title').equals(title).count()
+          if (exists === 0) {
+            await db.books.add({
+              title,
+              content,
+              importedAt: new Date(Date.now() - offset),
+              coverColor: generateCoverColor(title),
+            })
+          }
         }
+      } catch (e) {
+        console.warn('Could not load sample books', e)
       }
       setInitialized(true)
     }
