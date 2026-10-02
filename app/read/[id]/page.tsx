@@ -165,39 +165,6 @@ export default function ReadPage() {
         onToggleSettings={() => setSettingsOpen(true)}
       />
 
-      {/* Tap zones overlay */}
-      <div
-        style={{
-          position: 'fixed',
-          top: 56,
-          left: 0,
-          right: 0,
-          bottom: 56,
-          zIndex: 10,
-          display: 'flex',
-        }}
-      >
-        {/* Left tap zone */}
-        <div
-          style={{ width: '35%', height: '100%', cursor: 'pointer' }}
-          onClick={() => {
-            if (currentPage > 0) handlePageChange(currentPage - 1)
-          }}
-        />
-        {/* Center tap zone */}
-        <div
-          style={{ flex: 1, height: '100%', cursor: 'pointer' }}
-          onClick={handleCenterTap}
-        />
-        {/* Right tap zone */}
-        <div
-          style={{ width: '35%', height: '100%', cursor: 'pointer' }}
-          onClick={() => {
-            if (currentPage < totalPages - 1) handlePageChange(currentPage + 1)
-          }}
-        />
-      </div>
-
       <div style={{ paddingTop: 56 }}>
         <PagedReader
           content={book.content}
@@ -205,6 +172,7 @@ export default function ReadPage() {
           currentPage={currentPage}
           onPageChange={handlePageChange}
           onTotalPages={handleTotalPages}
+          onToggleUI={handleCenterTap}
           charOffsetToJump={charOffsetToJump}
         />
       </div>

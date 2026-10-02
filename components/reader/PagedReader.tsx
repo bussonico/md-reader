@@ -13,6 +13,7 @@ interface PagedReaderProps {
   currentPage: number
   onPageChange: (page: number) => void
   onTotalPages: (total: number) => void
+  onToggleUI: () => void
   charOffsetToJump?: number | null
 }
 
@@ -26,7 +27,7 @@ const THEME_STYLES: Record<Settings['theme'], { bg: string; text: string; accent
 const MARGIN_VALUES: Record<Settings['margins'], { x: number; y: number }> = {
   S: { x: 16, y: 16 },
   M: { x: 28, y: 20 },
-  L: { x: 44, y: 28 },
+  L: { x: 48, y: 32 },
 }
 
 export default function PagedReader({
@@ -35,23 +36,29 @@ export default function PagedReader({
   currentPage,
   onPageChange,
   onTotalPages,
+  onToggleUI,
   charOffsetToJump,
 }: PagedReaderProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const [readerHeight, setReaderHeight] = useState(0)
   const [pageWidth, setPageWidth] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
+
+  // Touch handling for swipes
   const touchStartX = useRef<number | null>(null)
   const touchStartY = useRef<number | null>(null)
+  const didSwipe = useRef(false)
 
   const theme = THEME_STYLES[settings.theme]
   const margin = MARGIN_VALUES[settings.margins]
 
+  // Column width = viewport - margins on each side
+  const colWidth = pageWidth > 0 ? pageWidth - 2 * margin.x : 0
+
   // Calculate dimensions
   const updateDimensions = useCallback(() => {
-    const header = 56 // top bar
-    const footer = 56 // bottom bar
+    const header = 56
+    const footer = 56
     const h = window.innerHeight - header - footer
     const w = window.innerWidth
     setReaderHeight(h)
@@ -60,29 +67,26 @@ export default function PagedReader({
 
   useEffect(() => {
     updateDimensions()
-    const ro = new ResizeObserver(updateDimensions)
-    ro.observe(document.documentElement)
-    return () => ro.disconnect()
+    window.addEventListener('resize', updateDimensions)
+    return () => window.removeEventListener('resize', updateDimensions)
   }, [updateDimensions])
 
-  // Calculate total pages after content renders
+  // Recalculate totalPages when content or dimensions change
   useEffect(() => {
-    if (!contentRef.current || pageWidth === 0 || readerHeight === 0) return
+    if (!contentRef.current || colWidth <= 0 || readerHeight <= 0) return
     const ro = new ResizeObserver(() => {
-      if (!contentRef.current || pageWidth === 0) return
-      const scrollWidth = contentRef.current.scrollWidth
-      const total = Math.max(1, Math.round(scrollWidth / pageWidth))
+      if (!contentRef.current || colWidth <= 0) return
+      const total = Math.max(1, Math.ceil(contentRef.current.scrollWidth / colWidth))
       setTotalPages(total)
       onTotalPages(total)
     })
     ro.observe(contentRef.current)
     return () => ro.disconnect()
-  }, [pageWidth, readerHeight, onTotalPages, content, settings])
+  }, [colWidth, readerHeight, onTotalPages, content, settings])
 
   // Jump to char offset (for search/TOC)
   useEffect(() => {
-    if (charOffsetToJump == null || !contentRef.current || pageWidth === 0) return
-    // Find which page the char offset falls in by scanning text nodes
+    if (charOffsetToJump == null || !contentRef.current || colWidth <= 0) return
     const walker = document.createTreeWalker(contentRef.current, NodeFilter.SHOW_TEXT)
     let charCount = 0
     let targetNode: Text | null = null
@@ -104,15 +108,16 @@ export default function PagedReader({
       const rect = range.getBoundingClientRect()
       const containerRect = contentRef.current.getBoundingClientRect()
       const relativeLeft = rect.left - containerRect.left
-      const page = Math.floor(relativeLeft / pageWidth)
+      const page = Math.floor(relativeLeft / colWidth)
       onPageChange(Math.max(0, Math.min(page, totalPages - 1)))
     }
-  }, [charOffsetToJump, pageWidth, totalPages, onPageChange])
+  }, [charOffsetToJump, colWidth, totalPages, onPageChange])
 
-  // Touch navigation
+  // Touch navigation (swipe)
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX
     touchStartY.current = e.touches[0].clientY
+    didSwipe.current = false
   }
 
   const handleTouchEnd = (e: React.TouchEvent) => {
@@ -121,24 +126,32 @@ export default function PagedReader({
     const dy = e.changedTouches[0].clientY - touchStartY.current
     touchStartX.current = null
     touchStartY.current = null
-    if (Math.abs(dx) < Math.abs(dy)) return // vertical scroll
-    if (Math.abs(dx) < 30) return // too small
+
+    if (Math.abs(dx) < Math.abs(dy) * 1.2) return // more vertical than horizontal
+    if (Math.abs(dx) < 40) return // too small, treat as tap
+
+    didSwipe.current = true
     if (dx < 0 && currentPage < totalPages - 1) {
-      onPageChange(currentPage + 1)
+      onPageChange(currentPage + 1) // swipe left = next
     } else if (dx > 0 && currentPage > 0) {
-      onPageChange(currentPage - 1)
+      onPageChange(currentPage - 1) // swipe right = prev
     }
   }
 
-  // Tap navigation
+  // Tap navigation (click)
   const handleTap = (e: React.MouseEvent) => {
+    if (didSwipe.current) {
+      didSwipe.current = false
+      return
+    }
     const x = e.clientX
     const w = window.innerWidth
-    const zone = w * 0.35
-    if (x < zone) {
+    if (x < w * 0.35) {
       if (currentPage > 0) onPageChange(currentPage - 1)
-    } else if (x > w - zone) {
+    } else if (x > w * 0.65) {
       if (currentPage < totalPages - 1) onPageChange(currentPage + 1)
+    } else {
+      onToggleUI()
     }
   }
 
@@ -170,6 +183,9 @@ export default function PagedReader({
           paddingTop: margin.y,
           paddingBottom: margin.y,
         }}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onClick={handleTap}
       >
         <div
           style={{
@@ -187,46 +203,56 @@ export default function PagedReader({
     )
   }
 
+  // Paged mode
+  // Outer: clips to full viewport width, overflow hidden
+  // Inner: narrower (pageWidth - 2*marginX), left-offset by marginX → gives equal margins
+  // Content: columns of colWidth, translates horizontally per page
   return (
     <div
-      ref={containerRef}
       style={{
         width: '100dvw',
         height: `${readerHeight}px`,
         overflow: 'hidden',
         backgroundColor: theme.bg,
         position: 'relative',
-        userSelect: 'none',
       }}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       onClick={handleTap}
     >
+      {/* Inner viewport with margins applied via offset + width */}
       <div
-        ref={contentRef}
         style={{
-          height: `${readerHeight}px`,
-          columns: `${pageWidth}px`,
-          columnGap: '0px',
-          columnFill: 'auto',
-          width: 'max-content',
-          transform: `translateX(-${currentPage * pageWidth}px)`,
-          transition: 'transform 0.2s ease',
-          paddingLeft: margin.x,
-          paddingRight: margin.x,
-          paddingTop: margin.y,
-          paddingBottom: margin.y,
-          boxSizing: 'border-box',
-          wordBreak: 'break-word',
-          overflowWrap: 'break-word',
-          color: theme.text,
-          fontFamily: settings.fontFamily,
-          fontSize: settings.fontSize,
-          lineHeight: settings.lineHeight,
-          textAlign: settings.alignment,
+          position: 'absolute',
+          left: margin.x,
+          top: margin.y,
+          width: colWidth,
+          height: readerHeight - 2 * margin.y,
+          overflow: 'hidden',
         }}
       >
-        <MarkdownContent content={content} theme={theme} />
+        {/* Scrolling content strip */}
+        <div
+          ref={contentRef}
+          style={{
+            height: '100%',
+            columns: `${colWidth}px`,
+            columnGap: '0px',
+            columnFill: 'auto',
+            width: 'max-content',
+            transform: `translateX(-${currentPage * colWidth}px)`,
+            transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+            wordBreak: 'break-word',
+            overflowWrap: 'break-word',
+            color: theme.text,
+            fontFamily: settings.fontFamily,
+            fontSize: `${settings.fontSize}px`,
+            lineHeight: settings.lineHeight,
+            textAlign: settings.alignment as 'left' | 'justify',
+          }}
+        >
+          <MarkdownContent content={content} theme={theme} />
+        </div>
       </div>
     </div>
   )
@@ -242,24 +268,24 @@ function MarkdownContent({
   return (
     <div className="md-content">
       <style>{`
-        .md-content h1 { font-size: 1.6em; font-weight: 800; margin: 1em 0 0.5em; color: ${theme.text}; }
-        .md-content h2 { font-size: 1.3em; font-weight: 700; margin: 1em 0 0.4em; color: ${theme.text}; }
-        .md-content h3 { font-size: 1.1em; font-weight: 600; margin: 0.8em 0 0.3em; color: ${theme.text}; }
-        .md-content p { margin: 0 0 0.8em; }
-        .md-content ul, .md-content ol { margin: 0 0 0.8em 1.5em; }
-        .md-content li { margin-bottom: 0.2em; }
-        .md-content blockquote { border-left: 3px solid ${theme.accent}; padding-left: 1em; margin: 0.8em 0; opacity: 0.8; font-style: italic; }
-        .md-content code { font-family: monospace; font-size: 0.85em; background: rgba(128,128,128,0.15); padding: 0.1em 0.3em; border-radius: 3px; }
-        .md-content pre { background: rgba(128,128,128,0.15); padding: 0.8em; border-radius: 6px; overflow-x: auto; margin: 0.8em 0; break-inside: avoid; }
+        .md-content h1 { font-size: 1.5em; font-weight: 800; margin: 0 0 0.6em; color: ${theme.text}; break-after: avoid; }
+        .md-content h2 { font-size: 1.25em; font-weight: 700; margin: 1.2em 0 0.5em; color: ${theme.text}; break-after: avoid; }
+        .md-content h3 { font-size: 1.05em; font-weight: 600; margin: 1em 0 0.3em; color: ${theme.text}; break-after: avoid; }
+        .md-content p { margin: 0 0 0.75em; orphans: 3; widows: 3; }
+        .md-content ul, .md-content ol { margin: 0 0 0.75em 1.4em; }
+        .md-content li { margin-bottom: 0.25em; }
+        .md-content blockquote { border-left: 3px solid ${theme.accent}; padding-left: 0.9em; margin: 0.8em 0; opacity: 0.8; font-style: italic; break-inside: avoid; }
+        .md-content code { font-family: 'Courier New', monospace; font-size: 0.82em; background: rgba(128,128,128,0.15); padding: 0.1em 0.3em; border-radius: 3px; }
+        .md-content pre { background: rgba(128,128,128,0.15); padding: 0.75em; border-radius: 6px; overflow-x: auto; margin: 0.75em 0; break-inside: avoid; }
         .md-content pre code { background: none; padding: 0; }
-        .md-content table { border-collapse: collapse; width: 100%; margin: 0.8em 0; break-inside: avoid; font-size: 0.9em; }
-        .md-content th, .md-content td { border: 1px solid rgba(128,128,128,0.3); padding: 0.4em 0.6em; text-align: left; }
-        .md-content th { background: rgba(128,128,128,0.1); font-weight: 600; }
-        .md-content a { color: ${theme.accent}; text-decoration: underline; }
+        .md-content table { border-collapse: collapse; width: 100%; margin: 0.75em 0; break-inside: avoid; font-size: 0.88em; }
+        .md-content th, .md-content td { border: 1px solid rgba(128,128,128,0.3); padding: 0.35em 0.55em; text-align: left; }
+        .md-content th { background: rgba(128,128,128,0.12); font-weight: 600; }
+        .md-content a { color: ${theme.accent}; text-decoration: underline; opacity: 0.9; }
         .md-content hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 1em 0; }
         .md-content strong { font-weight: 700; }
         .md-content em { font-style: italic; }
-        .md-content img { max-width: 100%; border-radius: 4px; break-inside: avoid; }
+        .md-content img { max-width: 100%; height: auto; border-radius: 4px; break-inside: avoid; display: block; margin: 0.5em 0; }
       `}</style>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
