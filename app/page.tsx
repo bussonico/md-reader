@@ -14,15 +14,15 @@ export default function LibraryPage() {
   const { books, loading: booksLoading, importBook, deleteBook, togglePublic } = useBooks(user?.id ?? null)
   const [seeded, setSeeded] = useState(false)
 
-  // Seed sample books on first login (only if user has 0 books)
+  // Seed sample books only once per user (flag stored in localStorage)
   useEffect(() => {
     if (!user || seeded || booksLoading) return
-    if (books.length > 0) { setSeeded(true); return }
+    const seedKey = `md-reader-seeded-${user.id}`
+    if (localStorage.getItem(seedKey)) { setSeeded(true); return }
+    if (books.length > 0) { localStorage.setItem(seedKey, '1'); setSeeded(true); return }
 
     const seed = async () => {
       const SAMPLES = [
-        '/samples/sample1.md',
-        '/samples/sample2.md',
         '/samples/grinberg.md',
       ]
       try {
@@ -30,7 +30,6 @@ export default function LibraryPage() {
           const content = await fetch(file).then((r) => r.text())
           const title = extractTitle(content)
           const supabase = createClient()
-          // Check by title
           const { count } = await supabase
             .from('books')
             .select('*', { count: 'exact', head: true })
@@ -50,6 +49,7 @@ export default function LibraryPage() {
       } catch (e) {
         console.warn('Could not load sample books', e)
       }
+      localStorage.setItem(seedKey, '1')
       setSeeded(true)
     }
     seed()

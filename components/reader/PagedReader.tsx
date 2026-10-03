@@ -70,15 +70,12 @@ export default function PagedReader({
     visible: false, x: 0, y: 0, selectedText: '', charStart: 0, charEnd: 0,
   })
 
-  // Touch handling for swipes
-  const touchStartX = useRef<number | null>(null)
-  const touchStartY = useRef<number | null>(null)
-  const didSwipe = useRef(false)
-
-  // Long-press handling
+  // Unified pointer handling (swipe + long-press + tap)
+  const pointerStartX = useRef(0)
+  const pointerStartY = useRef(0)
+  const pointerActive = useRef(false)
+  const pointerMoved = useRef(false)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const longPressStartX = useRef(0)
-  const longPressStartY = useRef(0)
   const longPressTriggered = useRef(false)
 
   const theme = THEME_STYLES[settings.theme] ?? THEME_STYLES.Claro
@@ -145,47 +142,24 @@ export default function PagedReader({
     }
   }, [charOffsetToJump, colWidth, totalPages, onPageChange])
 
-  // Touch navigation (swipe)
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX
-    touchStartY.current = e.touches[0].clientY
-    didSwipe.current = false
-  }
-
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (touchStartX.current === null || touchStartY.current === null) return
-    const dx = e.changedTouches[0].clientX - touchStartX.current
-    const dy = e.changedTouches[0].clientY - touchStartY.current
-    touchStartX.current = null
-    touchStartY.current = null
-
-    if (Math.abs(dx) < Math.abs(dy) * 1.2) return // more vertical than horizontal
-    if (Math.abs(dx) < 40) return // too small, treat as tap
-
-    didSwipe.current = true
-    if (dx < 0 && currentPage < totalPages - 1) {
-      onPageChange(currentPage + 1) // swipe left = next
-    } else if (dx > 0 && currentPage > 0) {
-      onPageChange(currentPage - 1) // swipe right = prev
-    }
-  }
-
-  // Long press for highlights
+  // Unified pointer handler — covers swipe, long-press, and tap
+  // Using pointer events only avoids the dual touch/pointer conflict on mobile.
   const handlePointerDown = (e: React.PointerEvent) => {
-    longPressStartX.current = e.clientX
-    longPressStartY.current = e.clientY
+    if (e.button !== 0 && e.pointerType === 'mouse') return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pointerStartX.current = e.clientX
+    pointerStartY.current = e.clientY
+    pointerActive.current = true
+    pointerMoved.current = false
     longPressTriggered.current = false
 
     longPressTimer.current = setTimeout(() => {
+      if (pointerMoved.current) return
       longPressTriggered.current = true
-      // Get selection if any
       const sel = window.getSelection()
       if (sel && sel.toString().trim().length > 0) {
         const range = sel.getRangeAt(0)
         const rect = range.getBoundingClientRect()
-        const fullText = contentRef.current?.textContent ?? ''
-
-        // Calculate char offsets
         let charStart = 0
         let charEnd = 0
         if (contentRef.current) {
@@ -206,7 +180,6 @@ export default function PagedReader({
             if (!foundStart) charStart = count
           }
         }
-
         setHighlightMenu({
           visible: true,
           x: rect.left + rect.width / 2,
@@ -215,22 +188,16 @@ export default function PagedReader({
           charStart,
           charEnd,
         })
-        void fullText
       }
     }, 500)
   }
 
-  const handlePointerUp = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current)
-      longPressTimer.current = null
-    }
-  }
-
   const handlePointerMove = (e: React.PointerEvent) => {
-    const dx = Math.abs(e.clientX - longPressStartX.current)
-    const dy = Math.abs(e.clientY - longPressStartY.current)
+    if (!pointerActive.current) return
+    const dx = Math.abs(e.clientX - pointerStartX.current)
+    const dy = Math.abs(e.clientY - pointerStartY.current)
     if (dx > 10 || dy > 10) {
+      pointerMoved.current = true
       if (longPressTimer.current) {
         clearTimeout(longPressTimer.current)
         longPressTimer.current = null
@@ -238,29 +205,48 @@ export default function PagedReader({
     }
   }
 
-  // Tap navigation (click)
-  const handleTap = (e: React.MouseEvent) => {
-    if (didSwipe.current) {
-      didSwipe.current = false
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (!pointerActive.current) return
+    pointerActive.current = false
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+    if (longPressTriggered.current) return
+
+    const dx = e.clientX - pointerStartX.current
+    const dy = e.clientY - pointerStartY.current
+
+    // Swipe: horizontal movement > 40px and more horizontal than vertical
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      if (dx < 0 && currentPage < totalPages - 1) onPageChange(currentPage + 1)
+      else if (dx > 0 && currentPage > 0) onPageChange(currentPage - 1)
       return
     }
-    if (longPressTriggered.current) {
-      longPressTriggered.current = false
-      return
+
+    // Tap: minimal movement
+    if (Math.abs(dx) < 15 && Math.abs(dy) < 15) {
+      if (highlightMenu.visible) {
+        setHighlightMenu((m) => ({ ...m, visible: false }))
+        return
+      }
+      const x = e.clientX
+      const w = window.innerWidth
+      if (x < w * 0.35) {
+        if (currentPage > 0) onPageChange(currentPage - 1)
+      } else if (x > w * 0.65) {
+        if (currentPage < totalPages - 1) onPageChange(currentPage + 1)
+      } else {
+        onToggleUI()
+      }
     }
-    // Don't navigate if highlight menu is open
-    if (highlightMenu.visible) {
-      setHighlightMenu((m) => ({ ...m, visible: false }))
-      return
-    }
-    const x = e.clientX
-    const w = window.innerWidth
-    if (x < w * 0.35) {
-      if (currentPage > 0) onPageChange(currentPage - 1)
-    } else if (x > w * 0.65) {
-      if (currentPage < totalPages - 1) onPageChange(currentPage + 1)
-    } else {
-      onToggleUI()
+  }
+
+  const handlePointerCancel = () => {
+    pointerActive.current = false
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
     }
   }
 
@@ -330,12 +316,10 @@ export default function PagedReader({
           paddingTop: margin.y,
           paddingBottom: margin.y,
         }}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onClick={handleTap}
         onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
         onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
       >
         <div
           style={{
@@ -371,13 +355,12 @@ export default function PagedReader({
         overflow: 'hidden',
         backgroundColor: theme.bg,
         position: 'relative',
+        touchAction: 'none', // hand all gestures to pointer events
       }}
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      onClick={handleTap}
       onPointerDown={handlePointerDown}
-      onPointerUp={handlePointerUp}
       onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
     >
       {/* Inner viewport with margins applied via offset + width */}
       <div
