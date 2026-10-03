@@ -20,6 +20,7 @@ const THEME_STYLES: Record<Settings['theme'], { bar: string; text: string; borde
   Sepia: { bar: '#F4ECD8', text: '#3d2b1f', border: 'rgba(0,0,0,0.1)' },
   Oscuro: { bar: '#1c1c1e', text: '#e5e5e5', border: 'rgba(255,255,255,0.1)' },
   Negro: { bar: '#000000', text: '#e5e5e5', border: 'rgba(255,255,255,0.08)' },
+  Naranja: { bar: '#1A0F00', text: '#FFD9A0', border: 'rgba(255,160,64,0.2)' },
 }
 
 export default function ReaderUI({

@@ -10,7 +10,7 @@ interface SettingsSheetProps {
   onChange: (updates: Partial<Omit<Settings, 'id'>>) => void
 }
 
-const THEMES: Settings['theme'][] = ['Claro', 'Sepia', 'Oscuro', 'Negro']
+const THEMES: Settings['theme'][] = ['Claro', 'Sepia', 'Oscuro', 'Negro', 'Naranja']
 const FONTS = ['Merriweather', 'Georgia', 'system-ui', 'monospace']
 const FONT_LABELS: Record<string, string> = {
   Merriweather: 'Merriweather',
@@ -28,7 +28,7 @@ export default function SettingsSheet({ open, onClose, settings, onChange }: Set
           <label className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2 block">
             Tema
           </label>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-5 gap-2">
             {THEMES.map((t) => (
               <button
                 key={t}

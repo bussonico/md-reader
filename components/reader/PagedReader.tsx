@@ -6,6 +6,8 @@ import remarkGfm from 'remark-gfm'
 import rehypeSlug from 'rehype-slug'
 import rehypeSanitize from 'rehype-sanitize'
 import { Settings } from '@/lib/db'
+import HighlightMenu from './HighlightMenu'
+import type { SupabaseHighlight } from '@/lib/db'
 
 interface PagedReaderProps {
   content: string
@@ -15,6 +17,8 @@ interface PagedReaderProps {
   onTotalPages: (total: number) => void
   onToggleUI: () => void
   charOffsetToJump?: number | null
+  highlights?: SupabaseHighlight[]
+  onAddHighlight?: (text: string, color: string, note: string, pageIndex: number, charStart: number, charEnd: number) => void
 }
 
 const THEME_STYLES: Record<Settings['theme'], { bg: string; text: string; accent: string }> = {
@@ -22,12 +26,29 @@ const THEME_STYLES: Record<Settings['theme'], { bg: string; text: string; accent
   Sepia: { bg: '#F4ECD8', text: '#3d2b1f', accent: '#8b4513' },
   Oscuro: { bg: '#1c1c1e', text: '#e5e5e5', accent: '#e5e5e5' },
   Negro: { bg: '#000000', text: '#e5e5e5', accent: '#e5e5e5' },
+  Naranja: { bg: '#1A0F00', text: '#FFD9A0', accent: '#FFA040' },
 }
 
 const MARGIN_VALUES: Record<Settings['margins'], { x: number; y: number }> = {
   S: { x: 16, y: 16 },
   M: { x: 28, y: 20 },
   L: { x: 48, y: 32 },
+}
+
+const HIGHLIGHT_COLORS: Record<string, string> = {
+  yellow: 'rgba(255, 230, 0, 0.35)',
+  orange: 'rgba(255, 140, 0, 0.35)',
+  green: 'rgba(50, 205, 50, 0.30)',
+  pink: 'rgba(255, 105, 180, 0.30)',
+}
+
+interface HighlightMenuState {
+  visible: boolean
+  x: number
+  y: number
+  selectedText: string
+  charStart: number
+  charEnd: number
 }
 
 export default function PagedReader({
@@ -38,18 +59,29 @@ export default function PagedReader({
   onTotalPages,
   onToggleUI,
   charOffsetToJump,
+  highlights = [],
+  onAddHighlight,
 }: PagedReaderProps) {
   const contentRef = useRef<HTMLDivElement>(null)
   const [readerHeight, setReaderHeight] = useState(0)
   const [pageWidth, setPageWidth] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
+  const [highlightMenu, setHighlightMenu] = useState<HighlightMenuState>({
+    visible: false, x: 0, y: 0, selectedText: '', charStart: 0, charEnd: 0,
+  })
 
   // Touch handling for swipes
   const touchStartX = useRef<number | null>(null)
   const touchStartY = useRef<number | null>(null)
   const didSwipe = useRef(false)
 
-  const theme = THEME_STYLES[settings.theme]
+  // Long-press handling
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressStartX = useRef(0)
+  const longPressStartY = useRef(0)
+  const longPressTriggered = useRef(false)
+
+  const theme = THEME_STYLES[settings.theme] ?? THEME_STYLES.Claro
   const margin = MARGIN_VALUES[settings.margins]
 
   // Column width = viewport - margins on each side
@@ -138,10 +170,87 @@ export default function PagedReader({
     }
   }
 
+  // Long press for highlights
+  const handlePointerDown = (e: React.PointerEvent) => {
+    longPressStartX.current = e.clientX
+    longPressStartY.current = e.clientY
+    longPressTriggered.current = false
+
+    longPressTimer.current = setTimeout(() => {
+      longPressTriggered.current = true
+      // Get selection if any
+      const sel = window.getSelection()
+      if (sel && sel.toString().trim().length > 0) {
+        const range = sel.getRangeAt(0)
+        const rect = range.getBoundingClientRect()
+        const fullText = contentRef.current?.textContent ?? ''
+
+        // Calculate char offsets
+        let charStart = 0
+        let charEnd = 0
+        if (contentRef.current) {
+          const walker = document.createTreeWalker(contentRef.current, NodeFilter.SHOW_TEXT)
+          let count = 0
+          let foundStart = false
+          while (walker.nextNode()) {
+            const node = walker.currentNode as Text
+            if (node === range.startContainer) {
+              charStart = count + range.startOffset
+              foundStart = true
+            }
+            if (node === range.endContainer) {
+              charEnd = count + range.endOffset
+              break
+            }
+            count += node.length
+            if (!foundStart) charStart = count
+          }
+        }
+
+        setHighlightMenu({
+          visible: true,
+          x: rect.left + rect.width / 2,
+          y: rect.top - 8,
+          selectedText: sel.toString().trim(),
+          charStart,
+          charEnd,
+        })
+        void fullText
+      }
+    }, 500)
+  }
+
+  const handlePointerUp = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current)
+      longPressTimer.current = null
+    }
+  }
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    const dx = Math.abs(e.clientX - longPressStartX.current)
+    const dy = Math.abs(e.clientY - longPressStartY.current)
+    if (dx > 10 || dy > 10) {
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current)
+        longPressTimer.current = null
+      }
+    }
+  }
+
   // Tap navigation (click)
   const handleTap = (e: React.MouseEvent) => {
     if (didSwipe.current) {
       didSwipe.current = false
+      return
+    }
+    if (longPressTriggered.current) {
+      longPressTriggered.current = false
+      return
+    }
+    // Don't navigate if highlight menu is open
+    if (highlightMenu.visible) {
+      setHighlightMenu((m) => ({ ...m, visible: false }))
       return
     }
     const x = e.clientX
@@ -168,7 +277,45 @@ export default function PagedReader({
     return () => window.removeEventListener('keydown', handler)
   }, [currentPage, totalPages, onPageChange])
 
+  const handleHighlightSelect = (color: string) => {
+    if (onAddHighlight && highlightMenu.selectedText) {
+      onAddHighlight(
+        highlightMenu.selectedText,
+        color,
+        '',
+        currentPage,
+        highlightMenu.charStart,
+        highlightMenu.charEnd
+      )
+    }
+    window.getSelection()?.removeAllRanges()
+    setHighlightMenu((m) => ({ ...m, visible: false }))
+  }
+
+  const handleHighlightNote = (note: string) => {
+    if (onAddHighlight && highlightMenu.selectedText) {
+      onAddHighlight(
+        highlightMenu.selectedText,
+        'yellow',
+        note,
+        currentPage,
+        highlightMenu.charStart,
+        highlightMenu.charEnd
+      )
+    }
+    window.getSelection()?.removeAllRanges()
+    setHighlightMenu((m) => ({ ...m, visible: false }))
+  }
+
   const scrollMode = settings.readingMode === 'scroll'
+
+  // Build highlight CSS for current page
+  const currentPageHighlights = highlights.filter((h) => h.page_index === currentPage)
+  const highlightStyle = currentPageHighlights.map((h) => {
+    const color = HIGHLIGHT_COLORS[h.color] ?? HIGHLIGHT_COLORS.yellow
+    return `::selection { background: ${color}; }`
+  }).join('\n')
+  void highlightStyle
 
   if (scrollMode) {
     return (
@@ -186,6 +333,9 @@ export default function PagedReader({
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
         onClick={handleTap}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerMove={handlePointerMove}
       >
         <div
           style={{
@@ -199,14 +349,20 @@ export default function PagedReader({
         >
           <MarkdownContent content={content} theme={theme} />
         </div>
+        {highlightMenu.visible && (
+          <HighlightMenu
+            x={highlightMenu.x}
+            y={highlightMenu.y}
+            onSelectColor={handleHighlightSelect}
+            onAddNote={handleHighlightNote}
+            onClose={() => setHighlightMenu((m) => ({ ...m, visible: false }))}
+          />
+        )}
       </div>
     )
   }
 
   // Paged mode
-  // Outer: clips to full viewport width, overflow hidden
-  // Inner: narrower (pageWidth - 2*marginX), left-offset by marginX → gives equal margins
-  // Content: columns of colWidth, translates horizontally per page
   return (
     <div
       style={{
@@ -219,6 +375,9 @@ export default function PagedReader({
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
       onClick={handleTap}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onPointerMove={handlePointerMove}
     >
       {/* Inner viewport with margins applied via offset + width */}
       <div
@@ -254,6 +413,16 @@ export default function PagedReader({
           <MarkdownContent content={content} theme={theme} />
         </div>
       </div>
+
+      {highlightMenu.visible && (
+        <HighlightMenu
+          x={highlightMenu.x}
+          y={highlightMenu.y}
+          onSelectColor={handleHighlightSelect}
+          onAddNote={handleHighlightNote}
+          onClose={() => setHighlightMenu((m) => ({ ...m, visible: false }))}
+        />
+      )}
     </div>
   )
 }
@@ -286,6 +455,7 @@ function MarkdownContent({
         .md-content strong { font-weight: 700; }
         .md-content em { font-style: italic; }
         .md-content img { max-width: 100%; height: auto; border-radius: 4px; break-inside: avoid; display: block; margin: 0.5em 0; }
+        .md-content mark { background: rgba(255, 230, 0, 0.4); border-radius: 2px; padding: 0 1px; }
       `}</style>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
